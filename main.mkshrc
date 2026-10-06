@@ -1,0 +1,74 @@
+#!/usr/bin/env mksh
+# =======================================================
+#    __  __      _                  ____             __
+#   / / / /___  (_)___ ___  _____  / __ )____ ______/ /_
+#  / / / / __ \/ / __ `/ / / / _ \/ __  / __ `/ ___/ __ \
+# / /_/ / / / / / /_/ / /_/ /  __/ /_/ / /_/ (__  ) / / /
+# \____/_/ /_/_/\__, /\__,_/\___/_____/\__,_/____/_/ /_/
+#                 /_/
+# =======================================================
+# Version      : 3.4
+# Updated-time : 2026-10-5
+# Auther       : BiaoZyx
+# Email        : BiaoZyx@outlook.com
+# =======================================================
+#  __  __      _     _   _
+# |  \/  |__ _(_)_ _| |_(_)_ _____
+# | |\/| / _` | / _|  _| \ V / -_)
+# |_|  |_\__,_|_\__|\__|_|\_/\___|
+#              (~/.mkshrc)
+# =======================================================
+
+# ------------------------------
+# Guard: 仅由 mksh 加载
+# （其他 shell 例如 bash 登录时可能读到 ~/.profile 并连带 source 本文件，
+#   此时直接返回，避免 mksh 专有语法报错）
+# ------------------------------
+case ${KSH_VERSION:-} in
+*MIRBSD\ KSH*|*LEGACY\ KSH*) ;;
+*) return 0 2>/dev/null || exit 0 ;;
+esac
+
+# ------------------------------
+# Guard: 只加载一次
+# （登录 shell 会读 ~/.profile，而 startup.profile 又会 source 本文件，
+#   随后 mksh 还会自己再读一次 ~/.mkshrc —— 用标记避免重复加载/重复欢迎语。）
+# ------------------------------
+if [[ -n ${_MKSHRC_LOADED:-} ]]; then
+    return 0 2>/dev/null || exit 0
+fi
+_MKSHRC_LOADED=1
+
+# ------------------------------
+# Core Settings
+# ------------------------------
+# Setup for interactive shell
+if [[ $- == *i* ]]; then
+    . "$HOME/.mkshrc.d/interactive.startup"
+fi
+
+# User specific aliases and functions
+if [[ -d $HOME/.mkshrc.d ]]; then
+    for rc in "$HOME"/.mkshrc.d/*.mkshrc; do
+        [[ -f $rc ]] || continue
+        . "$rc"
+    done
+fi
+unset rc
+
+# Completions in Interactive Shell
+#   mksh 自带行编辑与补全（^I=complete-list、^R=search-history 等），
+#   没有 bash-completion 那套 readline 集成，故此处无需加载。
+
+# User's Configs
+case ":$PATH:" in
+*":$HOME/.local/bin:"*) ;;
+*) PATH="$HOME/.local/bin:$HOME/bin:$PATH" ;;
+esac
+export PATH
+
+# ------------------------------
+# Prompt Settings
+# ------------------------------
+# Prompt colors, git status parsing and prompt builders live in
+# mkshrc.d/prompt.mkshrc (loaded above via the *.mkshrc glob).

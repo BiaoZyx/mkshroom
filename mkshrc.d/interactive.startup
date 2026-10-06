@@ -1,0 +1,296 @@
+# =============================================
+#  _     _                   _   _
+# (_)_ _| |_ ___ _ _ __ _ __| |_(_)_ _____
+# | | ' \  _/ -_) '_/ _` / _|  _| \ V / -_)
+# |_|_||_\__\___|_| \__,_\__|\__|_|\_/\___|
+#             (~/.mkshrc.d/interactive.startup)
+# =============================================
+
+# --------------------
+# Default
+# --------------------
+
+# --- Shell Options ---
+# mksh 没有 shopt，与 bash 版的对应关系：
+#   pushd_ignore_dups -> 见下方 pushd() 的去重
+#   autopushd         -> 见下方 cd()：切换目录自动入栈
+#   extglob           -> mksh 默认支持扩展模式匹配（@(...)、+(...)、!(...)）
+#   autocd / cdspell / dirspell -> mksh 无对应选项，不可用
+#   注意：mksh 也不支持 C 风格 for ((;;))，下面一律使用 while ((;;))
+
+# --- History Settings ---
+HISTFILE="$HOME/.mksh_history"
+HISTSIZE=10000
+# mksh 会自动把新命令追加写入 HISTFILE（无需 bash 的 history -a / history -n），
+# 并自动忽略「与上一条重复」「以空白开头」的行 —— 等价于 HISTCONTROL=ignoreboth。
+# mksh 没有 HISTCONTROL / HISTIGNORE / histappend。
+#
+# 提示符构建钩子（等价于 bash 的 PROMPT_COMMAND）位于 mkshrc.d/prompt.mkshrc：
+# PS1 使用 ${| ... ; } 值替换，每次绘制提示符前执行，可拿到 $? 与 PIPESTATUS。
+
+# --------------------
+# 目录栈（mksh 没有 pushd/popd/dirs 内建命令）
+# --------------------
+# 语义与 bash 一致：DIRSTACK[0] 是最近入栈的目录，
+# dirs 打印「当前目录 + 栈内目录」，pushd/popd 支持 +n/-n 轮转，
+# dirs +n / dirs -n 打印单个条目（-n 从栈尾往回数，-1 是倒数第二个）。
+typeset -a DIRSTACK
+DIRSTACK=()
+
+# 组装完整列表：L[0]=$PWD，其后是栈条目
+_dirstack_list() {
+    local i
+    L[0]=$PWD
+    i=0
+    while (( i < ${#DIRSTACK[@]} )); do
+        L[i+1]=${DIRSTACK[i]}
+        i=$(( i + 1 ))
+    done
+}
+
+dirs() {
+    local n idx len out
+    local -a L
+    L=()
+    _dirstack_list
+    len=${#L[@]}
+
+    case ${1:-} in
+        '')
+            out=${L[0]}
+            idx=1
+            while (( idx < len )); do
+                out="$out ${L[idx]}"
+                idx=$(( idx + 1 ))
+            done
+            ;;
+        [+-]+([0-9]))
+            n=${1#[+-]}
+            if [[ $1 == -* ]]; then
+                idx=$(( len - 1 - n ))     # -1 = 倒数第二个（与 bash 一致）
+            else
+                idx=$n
+            fi
+            if (( idx < 0 || idx >= len )); then
+                print -r -- "dirs: $n: directory stack index out of range" >&2
+                return 1
+            fi
+            out=${L[idx]}
+            ;;
+        *)
+            print -r -- "Usage: dirs [+n|-n]" >&2
+            return 1
+            ;;
+    esac
+    print -r -- "$out"
+}
+
+# 弹出栈顶（DIRSTACK[0]）
+_dirstack_drop_top() {
+    local i n=${#DIRSTACK[@]}
+    local -a tmp
+    (( n == 0 )) && return 1
+    tmp=()
+    i=1
+    while (( i < n )); do
+        tmp[${#tmp[@]}]=${DIRSTACK[i]}
+        i=$(( i + 1 ))
+    done
+    DIRSTACK=("${tmp[@]}")
+}
+
+# 把「当前目录 + 栈」整体左移 n 位，结果的第 0 项成为新的当前目录
+_dirstack_rotate() {
+    local n=$1 i len
+    local -a L new
+    len=$(( ${#DIRSTACK[@]} + 1 ))
+    if (( n < 0 || n >= len )); then
+        print -r -- "pushd: directory stack not that deep" >&2
+        return 1
+    fi
+    L[0]=$PWD
+    i=0
+    while (( i < ${#DIRSTACK[@]} )); do
+        L[i+1]=${DIRSTACK[i]}
+        i=$(( i + 1 ))
+    done
+    i=0
+    while (( i < len )); do
+        new[i]=${L[(i + n) % len]}
+        i=$(( i + 1 ))
+    done
+    builtin cd -- "${new[0]}" || return 1
+    DIRSTACK=()
+    i=1
+    while (( i < len )); do
+        DIRSTACK[i-1]=${new[i]}
+        i=$(( i + 1 ))
+    done
+    dirs
+}
+
+pushd() {
+    local dir n oldpwd
+    if [[ $# -eq 0 ]]; then        # 无参数等价于 pushd +1
+        set -- +1
+    fi
+    case $1 in
+        [+-]+([0-9]))
+            n=${1#[+-]}
+            if [[ $1 == -* ]]; then
+                n=$(( ${#DIRSTACK[@]} + 1 - n ))   # 右移 n = 左移 len-n
+            fi
+            _dirstack_rotate "$n"
+            return
+            ;;
+        -)
+            dir=$OLDPWD
+            ;;
+        *)
+            dir=$1
+            ;;
+    esac
+
+    if [[ -z $dir || ! -d $dir ]]; then
+        print -r -- "pushd: $dir: No such file or directory" >&2
+        return 1
+    fi
+
+    oldpwd=$PWD
+    builtin cd -- "$dir" || return 1
+    # 去重（等价于 bash 的 pushd_ignore_dups：只避免连续重复）
+    if [[ ${DIRSTACK[0]:-} != "$oldpwd" ]]; then
+        DIRSTACK=("$oldpwd" "${DIRSTACK[@]}")
+    fi
+    dirs
+}
+
+popd() {
+    local n i idx len
+    local -a L tmp
+    if [[ $# -eq 0 ]]; then
+        if [[ ${#DIRSTACK[@]} -eq 0 ]]; then
+            print -r -- "popd: directory stack empty" >&2
+            return 1
+        fi
+        builtin cd -- "${DIRSTACK[0]}" || return 1
+        _dirstack_drop_top || return 1
+        dirs
+        return
+    fi
+
+    case $1 in
+        [+-]+([0-9]))
+            n=${1#[+-]}
+            len=${#DIRSTACK[@]}
+            if [[ $1 == -* ]]; then
+                idx=$(( len - n ))      # 从栈末尾数
+            else
+                idx=$n                  # 0 = 当前目录
+            fi
+            if (( idx < 0 || idx > len )); then
+                print -r -- "popd: directory stack not that deep" >&2
+                return 1
+            fi
+            if (( idx == 0 )); then
+                popd
+                return
+            fi
+            # 删除列表中的第 idx 项（0 = 当前目录，保持不变）
+            L[0]=$PWD
+            i=0
+            while (( i < len )); do
+                L[i+1]=${DIRSTACK[i]}
+                i=$(( i + 1 ))
+            done
+            tmp=()
+            i=0
+            while (( i < len + 1 )); do
+                if (( i != idx )); then
+                    tmp[${#tmp[@]}]=${L[i]}
+                fi
+                i=$(( i + 1 ))
+            done
+            DIRSTACK=()
+            i=1
+            while (( i < ${#tmp[@]} )); do
+                DIRSTACK[${#DIRSTACK[@]}]=${tmp[i]}
+                i=$(( i + 1 ))
+            done
+            dirs
+            return
+            ;;
+        *)
+            print -r -- "Usage: popd [+n|-n]" >&2
+            return 1
+            ;;
+    esac
+}
+
+# Custom cd function to support numeric directory-stack navigation,
+# while preserving normal cd behavior for regular paths.
+cd() {
+    if [[ $# -eq 1 ]]; then
+        case $1 in
+            [+-]+([0-9]))
+                pushd "$1"
+                return
+                ;;
+        esac
+    fi
+
+    local oldpwd=$PWD
+    if builtin cd "$@"; then
+        if [[ $oldpwd != "$PWD" ]]; then
+            # 自动入栈（对应 bash 版里的 pushd -n "$oldpwd"）
+            if [[ ${DIRSTACK[0]:-} != "$oldpwd" ]]; then
+                DIRSTACK=("$oldpwd" "${DIRSTACK[@]}")
+            fi
+        fi
+        return 0
+    fi
+    return 1
+}
+
+# Welcome message
+print "Welcome to mksh, \033[0;32m$USER\033[0m! "
+
+
+
+# ---------------------------------
+#  _    _         _
+# | |__(_)_ _  __| |
+# | '_ \ | ' \/ _` |
+# |_.__/_|_||_\__,_|
+# (~/.mkshrc.d/interactive.startup)
+# ---------------------------------
+
+# Ctrl-p 切换提示符样式（Powerline <-> ASCII）
+# mksh 没有 bash 的 bind -x，改用宏（bind -m）：把命令写进输入行并回车执行。
+# 行首的空格会让该行不写入历史（mksh 忽略以空白开头的行）。
+bind -m '^P= ptoggle^J'
+
+# Alt+Enter 插入字面换行符（行编辑方便），等价于 bash 的 "\C-v\C-j"
+bind -m '^[^M=^V^J'
+
+# Alt+↑ / Alt+↓ 历史子串搜索：
+#   mksh 的 bind 只接受最长 3 字节的按键序列，`\e[1;3A`（6 字节）无法绑定，
+#   而且 mksh 没有子串搜索。可用的等价物（默认已绑定）：
+#     PgUp = search-history-up / PgDn = search-history-down（前缀搜索）
+#     ^R   = search-history（增量搜索）
+
+# --------------------
+# Tab 补全优化
+# --------------------
+# mksh 默认 ^I = complete-list：先补全公共前缀、再列出候选；
+# mksh 没有 readline 的 menu-complete，无法实现 Tab 轮询选择。
+bind '^[[Z=list'   # Shift+Tab 只列出候选，不修改输入行
+
+# readline 的 `bind 'set ...'`（skip-completed-text / colored-stats /
+# visible-stats / completion-ignore-case / show-all-if-ambiguous /
+# menu-complete-display-prefix / mark-symlinked-directories /
+# match-hidden-files / horizontal-scroll-mode）在 mksh 中均不存在。
+# mksh 自带的等价行为：
+#   - 补全目录名自动追加 '/'（相当于 mark-symlinked-directories）
+#   - 隐藏文件需先输入 '.' 才会补全（相当于 match-hidden-files off）
+#   - 行超出屏幕宽度时水平滚动（相当于 horizontal-scroll-mode on）

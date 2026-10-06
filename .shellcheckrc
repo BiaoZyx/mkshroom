@@ -1,0 +1,14 @@
+# UniqueBash shellcheck configuration
+# Run: shellcheck -s bash setup.sh main.mkshrc mkshrc.d/*.mkshrc mkshrc.d/interactive.startup
+# 注：shellcheck 不认识 mksh 方言，用 -s bash 近似检查（mksh 专有语法会有少量误报）。
+
+# SC1090/SC1091: we source files via dynamic globs; can't statically resolve them
+disable=SC1090,SC1091
+# SC2016: literal '${...}' inside PS1 strings is intentional (expanded by mksh, not shellcheck)
+disable=SC2016
+# SC2154: _saved_ec / _saved_ps are assigned by the PS1 ${| ... ; } hook before use
+disable=SC2154
+# SC2164: `cd` targets are controlled; missing-dir abort is acceptable
+disable=SC2164
+# SC2086: intentional word-splitting in a few controlled spots (e.g. $ab_line tokens)
+disable=SC2086
